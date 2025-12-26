@@ -51,6 +51,7 @@ time_keyboard = ReplyKeyboardMarkup(
     one_time_keyboard=True,
 )
 
+# Главное меню (кнопки снизу)
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="▶️ Запустить")],
@@ -63,7 +64,7 @@ main_keyboard = ReplyKeyboardMarkup(
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# scheduler можно держать в UTC — мы задаём timezone на уровне job
+# scheduler можно держать в UTC — timezone задаём на уровне job
 scheduler = AsyncIOScheduler()
 
 
@@ -127,6 +128,7 @@ async def clear_state_outside(user_id: int):
 # ---------- start / menu ----------
 
 async def start_flow(message: Message, state: FSMContext):
+    # создаём/активируем пользователя и фиксируем активность
     db.upsert_user(message.from_user.id, notify_time=None, timezone_group="Москва", is_active=1)
     db.touch_activity(message.from_user.id)
 
@@ -188,7 +190,7 @@ async def skip_today(message: Message, state: FSMContext):
     today = today_str_for_user(user_id)
     db.set_skip_date(user_id, today)
 
-    # если в FSM уже стояло ожидание "сегодняшних" вопросов — уберём
+    # если в FSM стояло ожидание "сегодняшних" вопросов — уберём
     data = await state.get_data()
     if data.get("pending_date") == today:
         await state.update_data(pending_date=None)
@@ -246,27 +248,29 @@ async def choose_time(message: Message, state: FSMContext):
     db.update_notify_time(user_id, hhmm)
     schedule_user(user_id, hhmm)
 
+    # ✅ ВАЖНО: сразу отвечаем и показываем меню-кнопки
     await state.clear()
     await message.answer(
-        f"Готово 🌿 Буду писать каждый день в {hhmm} по вашему выбранному региону.",
+        f"Спасибо! Принято ✅\n"
+        f"Буду присылать вопросы каждый день в {hhmm} (по вашему выбранному региону).",
         reply_markup=main_keyboard,
     )
 
 
-# ---------- daily flow (с учётом “опоздал с ответами”, pending и skip) ----------
+# ---------- daily flow (pending + skip) ----------
 
 async def send_daily_questions(user_id: int):
     """
     В выбранное время каждый день:
     - если skip_date == today -> не начинаем новый набор
     - если пользователь НЕ в процессе ответов -> начинаем новый дневной набор
-    - если пользователь ещё отвечает на прошлые вопросы -> не прерываем, ставим pending_date=today
+    - если пользователь ещё отвечает -> не прерываем, ставим pending_date=today
       и начнём сегодняшние сразу после завершения q4 (если не нажали "пропустить сегодня")
     """
     today = today_str_for_user(user_id)
     u = db.get_user(user_id) or {}
+
     if u.get("skip_date") == today:
-        # пропускаем сегодня, завтра продолжим
         return
 
     current_state = await get_state_outside(user_id)
@@ -291,7 +295,7 @@ async def send_daily_questions(user_id: int):
         )
 
 
-# ---------- answers (с запуском pending дня после q4, если не “пропущен”) ----------
+# ---------- answers (с запуском pending дня после q4) ----------
 
 @dp.message(Form.q1)
 async def q1(message: Message, state: FSMContext):
@@ -343,10 +347,9 @@ async def q4(message: Message, state: FSMContext):
 
     today = today_str_for_user(user_id)
     u = db.get_user(user_id) or {}
-    skip_today = (u.get("skip_date") == today)
+    skip_today_flag = (u.get("skip_date") == today)
 
-    # если есть pending на сегодня и сегодня не пропущен — стартуем сразу
-    if pending_date == today and not skip_today:
+    if pending_date == today and not skip_today_flag:
         await message.answer("Спасибо! 🌿 Теперь начнём сегодняшний набор.", reply_markup=main_keyboard)
         await set_data_outside(user_id, {"session_date": today, "pending_date": None})
         await bot.send_message(user_id, QUESTIONS[0], reply_markup=main_keyboard)
@@ -356,14 +359,14 @@ async def q4(message: Message, state: FSMContext):
     await message.answer("Спасибо за ответы. До завтра!", reply_markup=main_keyboard)
 
 
-# ---------- тихое правило (проверка раз в день) ----------
+# ---------- тихое правило ----------
 
 async def check_inactive_users():
     """
-    Раз в день проверяем:
+    Раз в день:
     - если last_activity_at старше INACTIVE_DAYS
-    - и last_nudge_at либо пустой, либо старше NUDGE_COOLDOWN_DAYS
-    -> отправляем мягкий пинг
+    - и last_nudge_at пустой/старше NUDGE_COOLDOWN_DAYS
+    -> мягкий пинг
     """
     now = datetime.utcnow()
     users = db.get_users_for_nudge()
@@ -396,12 +399,11 @@ async def check_inactive_users():
             await bot.send_message(
                 user_id,
                 "Я рядом 🌿\n"
-                "Если хотите продолжить практику — нажмите «▶️ Запустить» или просто ответьте здесь.",
+                "Если хотите продолжить практику — нажмите «▶️ Запустить».",
                 reply_markup=main_keyboard,
             )
             db.save_nudge_sent(user_id)
         except:
-            # если пользователь заблокировал бота/ошибка доставки — молча пропускаем
             pass
 
 
