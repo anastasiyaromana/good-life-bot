@@ -1,6 +1,7 @@
 from aiogram.fsm.state import StatesGroup, State
 
 class Form(StatesGroup):
+    wait_region = State()
     wait_time = State()
     q1 = State()
     q2 = State()
